@@ -1,0 +1,8 @@
+# Dev/internal files — not needed by consumers
+test/
+.claude/
+PROMPT.md
+CLAUDE.md
+*.tgz
+*.log
+.DS_Store
