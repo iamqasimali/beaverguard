@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
 const {
   KNOWN_MALICIOUS_PACKAGES,
   TRUSTED_PACKAGES,
@@ -13,6 +14,25 @@ const { SEVERITY, createFinding, printFinding, printSummary, printHeader } = req
 const INSTALL_HOOKS = ['preinstall', 'install', 'postinstall', 'prepare', 'prepack'];
 const DEP_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
 const LOCAL_PREFIXES = ['file:', 'git+', 'github:', 'bitbucket:', 'gitlab:'];
+const SOCKET_API = 'https://socket.dev/api/npm/package';
+
+/**
+ * Fetch a package's security score from Socket.dev.
+ * Returns null on any network/parse error — never throws.
+ * @param {string} packageName
+ * @returns {Promise<{score: number, issues: object}|null>}
+ */
+async function fetchSocketScore(packageName) {
+  try {
+    const { data } = await axios.get(`${SOCKET_API}/${encodeURIComponent(packageName)}/score`, {
+      timeout: 3000,
+      headers: { 'User-Agent': 'beaverguard-scanner/1.0' },
+    });
+    return { score: data.score, issues: data.issues || {} };
+  } catch (_) {
+    return null;
+  }
+}
 
 /**
  * Analyse a single npm package name + version for threat indicators.
@@ -134,16 +154,65 @@ function scanPackageJson(packageJsonPath) {
 }
 
 /**
+ * Run a full package scan with optional Socket.dev network checks.
+ * @param {string} packageJsonPath
+ * @param {{ noNetwork?: boolean }} [options]
+ * @returns {Promise<{ findings: object[], packageName: string, elapsed: number }>}
+ */
+async function scanPackageJsonWithNetwork(packageJsonPath, options = {}) {
+  const result = scanPackageJson(packageJsonPath);
+  if (options.noNetwork) return result;
+
+  // Collect unique package names not already flagged CRITICAL and not trusted
+  const flaggedCritical = new Set(
+    result.findings.filter((f) => f.severity === SEVERITY.CRITICAL).map((f) => f.target)
+  );
+
+  let pkg;
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.resolve(packageJsonPath), 'utf8'));
+  } catch (_) {
+    return result;
+  }
+
+  const toCheck = new Set();
+  for (const section of DEP_SECTIONS) {
+    const deps = pkg[section] || {};
+    for (const name of Object.keys(deps)) {
+      if (!flaggedCritical.has(name) && !TRUSTED_PACKAGES.has(name)) toCheck.add(name);
+    }
+  }
+
+  // Sequential to avoid rate-limiting Socket.dev
+  for (const name of toCheck) {
+    const data = await fetchSocketScore(name);
+    if (data && typeof data.score === 'number' && data.score < 0.5) {
+      result.findings.push(createFinding(
+        SEVERITY.HIGH,
+        'Low Socket.dev score',
+        name,
+        `Socket.dev security score is ${data.score.toFixed(2)} (threshold: 0.50) — package flagged for suspicious behaviour.`,
+        `https://socket.dev/npm/package/${name}`
+      ));
+    }
+  }
+
+  result.elapsed = Date.now() - (Date.now() - result.elapsed);
+  return result;
+}
+
+/**
  * Run a full package scan and print results.
  * @param {string} packageJsonPath
- * @returns {object[]} findings
+ * @param {{ noNetwork?: boolean }} [options]
+ * @returns {Promise<object[]>} findings
  */
-function runPackageScan(packageJsonPath) {
+async function runPackageScan(packageJsonPath, options = {}) {
   printHeader('Package Scanner');
-  const { findings, packageName, elapsed } = scanPackageJson(packageJsonPath);
+  const { findings, packageName, elapsed } = await scanPackageJsonWithNetwork(packageJsonPath, options);
   for (const f of findings) printFinding(f);
   printSummary(`Package Scanner — ${packageName}`, findings, elapsed);
   return findings;
 }
 
-module.exports = { analysePackage, scanPackageJson, runPackageScan };
+module.exports = { analysePackage, scanPackageJson, scanPackageJsonWithNetwork, fetchSocketScore, runPackageScan };
