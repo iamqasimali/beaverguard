@@ -6,16 +6,25 @@ const chalk = require('chalk');
 const path = require('path');
 const fs = require('fs');
 
-const { runPackageScan, scanPackageJson, scanPackageJsonWithNetwork } = require('../src/scanners/packageScanner');
+const { runPackageScan, scanPackageJsonWithNetwork } = require('../src/scanners/packageScanner');
 const { runFileScan, scanFiles } = require('../src/scanners/fileScanner');
 const { runRepoScan, scanGitHubRepo } = require('../src/scanners/repoScanner');
 const { startWatcher } = require('../src/scanners/watchScanner');
 
 const program = new Command();
 
+/**
+ * Exit 1 if any finding is CRITICAL or HIGH (the documented CI contract).
+ * @param {object[]} findings
+ */
+function exitOnSevere(findings) {
+  const severe = findings.filter((f) => f.severity === 'CRITICAL' || f.severity === 'HIGH');
+  if (severe.length > 0) process.exit(1);
+}
+
 program
   .name('beaverguard')
-  .version('1.0.0')
+  .version(require('../package.json').version)
   .description(`${chalk.red.bold('BeaverGuard')} ${chalk.dim('— BeaverTail/DPRK malware scanner')}`);
 
 // scan-packages
@@ -24,17 +33,17 @@ program
   .alias('sp')
   .description('Scan a package.json for malicious dependencies and install scripts')
   .option('--json', 'Output results as JSON')
-  .option('--no-network', 'Skip Socket.dev remote checks (offline mode)')
+  .option('--no-network', 'Skip OSV.dev remote checks (offline mode)')
   .action(async (pkgPath = './package.json', opts) => {
     try {
       const noNetwork = opts.network === false;
       if (opts.json) {
         const result = await scanPackageJsonWithNetwork(pkgPath, { noNetwork });
         console.log(JSON.stringify(result, null, 2));
+        exitOnSevere(result.findings);
       } else {
         const findings = await runPackageScan(pkgPath, { noNetwork });
-        const critical = findings.filter((f) => f.severity === 'CRITICAL' || f.severity === 'HIGH');
-        if (critical.length > 0) process.exit(1);
+        exitOnSevere(findings);
       }
     } catch (err) {
       console.error(chalk.red(`Error: ${err.message}`));
@@ -53,10 +62,10 @@ program
       if (opts.json) {
         const result = scanFiles(targetPath);
         console.log(JSON.stringify(result, null, 2));
+        exitOnSevere(result.findings);
       } else {
         const findings = runFileScan(targetPath);
-        const critical = findings.filter((f) => f.severity === 'CRITICAL' || f.severity === 'HIGH');
-        if (critical.length > 0) process.exit(1);
+        exitOnSevere(findings);
       }
     } catch (err) {
       console.error(chalk.red(`Error: ${err.message}`));
@@ -77,10 +86,10 @@ program
       if (opts.json) {
         const result = await scanGitHubRepo(repoUrl, token);
         console.log(JSON.stringify(result, null, 2));
+        exitOnSevere(result.findings);
       } else {
         const findings = await runRepoScan(repoUrl, token);
-        const critical = findings.filter((f) => f.severity === 'CRITICAL' || f.severity === 'HIGH');
-        if (critical.length > 0) process.exit(1);
+        exitOnSevere(findings);
       }
     } catch (err) {
       console.error(chalk.red(`Error: ${err.message}`));
@@ -104,30 +113,31 @@ program
   .alias('s')
   .description('Run all static scans (packages + files) on a directory')
   .option('--json', 'Output combined findings as JSON')
+  .option('--no-network', 'Skip OSV.dev remote checks (offline mode)')
   .action(async (targetPath = '.', opts) => {
     const absPath = path.resolve(targetPath);
     const pkgPath = path.join(absPath, 'package.json');
+    const noNetwork = opts.network === false;
     const allFindings = [];
 
     try {
       if (opts.json) {
         if (fs.existsSync(pkgPath)) {
-          const pkgResult = scanPackageJson(pkgPath);
+          const pkgResult = await scanPackageJsonWithNetwork(pkgPath, { noNetwork });
           for (const f of pkgResult.findings) allFindings.push({ ...f, scanner: 'packages' });
         }
         const fileResult = scanFiles(targetPath);
         for (const f of fileResult.findings) allFindings.push({ ...f, scanner: 'files' });
         console.log(JSON.stringify({ findings: allFindings, total: allFindings.length }, null, 2));
       } else {
-        let pkgFindings = [];
         if (fs.existsSync(pkgPath)) {
-          pkgFindings = runPackageScan(pkgPath);
+          const pkgFindings = await runPackageScan(pkgPath, { noNetwork });
+          allFindings.push(...pkgFindings);
         }
         const fileFindings = runFileScan(targetPath);
-        allFindings.push(...pkgFindings, ...fileFindings);
-        const critical = allFindings.filter((f) => f.severity === 'CRITICAL' || f.severity === 'HIGH');
-        if (critical.length > 0) process.exit(1);
+        allFindings.push(...fileFindings);
       }
+      exitOnSevere(allFindings);
     } catch (err) {
       console.error(chalk.red(`Error: ${err.message}`));
       process.exit(1);
@@ -153,7 +163,16 @@ program
       process.exit(1);
     }
 
-    const script = `#!/bin/sh\n# Installed by BeaverGuard — beaverguard uninstall-hook to remove\nbeaverguard scan-packages ./package.json\n`;
+    const script = [
+      '#!/bin/sh',
+      '# Installed by BeaverGuard — beaverguard uninstall-hook to remove',
+      'if command -v beaverguard >/dev/null 2>&1; then',
+      '  beaverguard scan-packages ./package.json',
+      'else',
+      '  npx --yes beaverguard scan-packages ./package.json',
+      'fi',
+      '',
+    ].join('\n');
     fs.writeFileSync(hookPath, script, { mode: 0o755 });
     console.log(chalk.green(`✅ Pre-commit hook installed at ${hookPath}`));
     console.log(chalk.dim('   Runs: beaverguard scan-packages ./package.json on every commit.'));

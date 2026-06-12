@@ -5,7 +5,6 @@ const KNOWN_MALICIOUS_PACKAGES = new Set([
   'node-telegram-utils',
   'node-cron-utils',
   'postcss-optimizer',
-  'react-native-async-storage',
   'dev-debugger-vite-plugin',
   'eslint-scope-util',
   'next-auth-util',
@@ -104,12 +103,14 @@ const MALICIOUS_FILE_PATTERNS = [
   { pattern: /readFileSync\s*\(\s*['"`][^'"`]*\.ssh[^'"`]*['"`]/i, reason: 'Reads SSH directory — SSH key theft' },
   { pattern: /readFileSync\s*\(\s*['"`][^'"`]*\.aws[^'"`]*['"`]/i, reason: 'Reads AWS credentials directory' },
   { pattern: /readFileSync\s*\(\s*['"`][^'"`]*id_rsa[^'"`]*['"`]/i, reason: 'Reads SSH private key (id_rsa)' },
-  { pattern: /process\.env\.AWS_ACCESS_KEY_ID/i, reason: 'Accesses AWS access key credentials' },
-  { pattern: /process\.env\.AWS_SECRET/i, reason: 'Accesses AWS secret credentials' },
-  { pattern: /process\.env\.AWS_SESSION/i, reason: 'Accesses AWS session token' },
-  { pattern: /process\.env\.GITHUB_TOKEN/i, reason: 'Accesses GitHub personal access token' },
-  { pattern: /process\.env\.NPM_TOKEN/i, reason: 'Accesses NPM authentication token' },
-  { pattern: /process\.env\.GH_TOKEN/i, reason: 'Accesses GitHub token (GH_TOKEN)' },
+  // Bare env-var token reads are common in legit code (SDKs, CI scripts) — MEDIUM.
+  // Exfiltration patterns below (POST/WebSocket to external hosts) stay HIGH.
+  { pattern: /process\.env\.AWS_ACCESS_KEY_ID/i, reason: 'Accesses AWS access key credentials', severity: 'MEDIUM' },
+  { pattern: /process\.env\.AWS_SECRET/i, reason: 'Accesses AWS secret credentials', severity: 'MEDIUM' },
+  { pattern: /process\.env\.AWS_SESSION/i, reason: 'Accesses AWS session token', severity: 'MEDIUM' },
+  { pattern: /process\.env\.GITHUB_TOKEN/i, reason: 'Accesses GitHub personal access token', severity: 'MEDIUM' },
+  { pattern: /process\.env\.NPM_TOKEN/i, reason: 'Accesses NPM authentication token', severity: 'MEDIUM' },
+  { pattern: /process\.env\.GH_TOKEN/i, reason: 'Accesses GitHub token (GH_TOKEN)', severity: 'MEDIUM' },
   { pattern: /axios\.post\s*\(\s*['"`]https?:\/\//i, reason: 'POSTs data to external URL — possible exfiltration' },
   { pattern: /fetch\s*\(\s*['"`]https?:\/\/[^'"`]+['"`]\s*,\s*\{[^}]*method\s*:\s*['"`]POST['"`]/i, reason: 'fetch POST to external endpoint — possible exfiltration' },
   { pattern: /new\s+WebSocket\s*\(\s*['"`]wss?:\/\//i, reason: 'Opens WebSocket to external host — C2 communication pattern' },
@@ -137,6 +138,20 @@ const SENSITIVE_FILE_NAMES = [
   { name: 'keystore.json', reason: 'Keystore file — may contain crypto wallet keys' },
 ];
 
+/**
+ * Official npm scopes of wallet/crypto vendors — packages under these scopes
+ * are skipped by the crypto/wallet name patterns above so legit SDKs
+ * (e.g. @metamask/sdk, @solana/wallet-adapter-react) are not flagged.
+ */
+const TRUSTED_SCOPES = new Set([
+  '@metamask',
+  '@solana',
+  '@solana-mobile',
+  '@coinbase',
+  '@walletconnect',
+  '@ethersproject',
+]);
+
 /** Well-known safe packages — skip deep analysis */
 const TRUSTED_PACKAGES = new Set([
   'express', 'react', 'react-dom', 'next', 'vue', 'nuxt', 'lodash', 'axios',
@@ -157,4 +172,5 @@ module.exports = {
   MALICIOUS_FILE_PATTERNS,
   SENSITIVE_FILE_NAMES,
   TRUSTED_PACKAGES,
+  TRUSTED_SCOPES,
 };

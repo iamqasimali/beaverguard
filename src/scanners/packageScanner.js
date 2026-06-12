@@ -6,6 +6,7 @@ const axios = require('axios');
 const {
   KNOWN_MALICIOUS_PACKAGES,
   TRUSTED_PACKAGES,
+  TRUSTED_SCOPES,
   SUSPICIOUS_PATTERNS,
   SUSPICIOUS_SCRIPT_PATTERNS,
 } = require('../utils/signatures');
@@ -14,21 +15,31 @@ const { SEVERITY, createFinding, printFinding, printSummary, printHeader } = req
 const INSTALL_HOOKS = ['preinstall', 'install', 'postinstall', 'prepare', 'prepack'];
 const DEP_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
 const LOCAL_PREFIXES = ['file:', 'git+', 'github:', 'bitbucket:', 'gitlab:'];
-const SOCKET_API = 'https://socket.dev/api/npm/package';
+const OSV_API = 'https://api.osv.dev/v1/querybatch';
 
 /**
- * Fetch a package's security score from Socket.dev.
+ * Look up npm packages against the OSV.dev advisory database in a single
+ * batch request, returning only malicious-package advisories (MAL-* IDs).
  * Returns null on any network/parse error — never throws.
- * @param {string} packageName
- * @returns {Promise<{score: number, issues: object}|null>}
+ * @param {string[]} packageNames
+ * @returns {Promise<Object<string, string[]>|null>} map of package name → MAL advisory IDs
  */
-async function fetchSocketScore(packageName) {
+async function fetchOsvMalware(packageNames) {
+  if (!packageNames || packageNames.length === 0) return {};
   try {
-    const { data } = await axios.get(`${SOCKET_API}/${encodeURIComponent(packageName)}/score`, {
-      timeout: 3000,
+    const queries = packageNames.map((name) => ({ package: { name, ecosystem: 'npm' } }));
+    const { data } = await axios.post(OSV_API, { queries }, {
+      timeout: 8000,
       headers: { 'User-Agent': 'beaverguard-scanner/1.0' },
     });
-    return { score: data.score, issues: data.issues || {} };
+    const malicious = {};
+    (data.results || []).forEach((result, i) => {
+      const malIds = ((result && result.vulns) || [])
+        .map((v) => v.id)
+        .filter((id) => typeof id === 'string' && id.startsWith('MAL-'));
+      if (malIds.length > 0) malicious[packageNames[i]] = malIds;
+    });
+    return malicious;
   } catch (_) {
     return null;
   }
@@ -52,6 +63,10 @@ function analysePackage(name, version) {
   }
 
   if (TRUSTED_PACKAGES.has(name)) return [];
+
+  // Scoped packages under official vendor scopes (e.g. @metamask/sdk) are
+  // legit SDKs — exempt them from the name-pattern heuristics.
+  if (name.startsWith('@') && TRUSTED_SCOPES.has(name.split('/')[0])) return [];
 
   for (const { pattern, reason } of SUSPICIOUS_PATTERNS) {
     if (pattern.test(name)) {
@@ -154,7 +169,7 @@ function scanPackageJson(packageJsonPath) {
 }
 
 /**
- * Run a full package scan with optional Socket.dev network checks.
+ * Run a full package scan with optional OSV.dev network checks.
  * @param {string} packageJsonPath
  * @param {{ noNetwork?: boolean }} [options]
  * @returns {Promise<{ findings: object[], packageName: string, elapsed: number }>}
@@ -163,7 +178,9 @@ async function scanPackageJsonWithNetwork(packageJsonPath, options = {}) {
   const result = scanPackageJson(packageJsonPath);
   if (options.noNetwork) return result;
 
-  // Collect unique package names not already flagged CRITICAL and not trusted
+  // Collect unique package names not already flagged CRITICAL by the local
+  // signature scan. Trusted packages are included too — a hijacked legit
+  // package would still surface via its OSV MAL advisory.
   const flaggedCritical = new Set(
     result.findings.filter((f) => f.severity === SEVERITY.CRITICAL).map((f) => f.target)
   );
@@ -179,25 +196,25 @@ async function scanPackageJsonWithNetwork(packageJsonPath, options = {}) {
   for (const section of DEP_SECTIONS) {
     const deps = pkg[section] || {};
     for (const name of Object.keys(deps)) {
-      if (!flaggedCritical.has(name) && !TRUSTED_PACKAGES.has(name)) toCheck.add(name);
+      if (!flaggedCritical.has(name)) toCheck.add(name);
     }
   }
 
-  // Sequential to avoid rate-limiting Socket.dev
-  for (const name of toCheck) {
-    const data = await fetchSocketScore(name);
-    if (data && typeof data.score === 'number' && data.score < 0.5) {
+  const netStart = Date.now();
+  const malicious = await fetchOsvMalware([...toCheck]);
+  if (malicious) {
+    for (const [name, ids] of Object.entries(malicious)) {
       result.findings.push(createFinding(
-        SEVERITY.HIGH,
-        'Low Socket.dev score',
+        SEVERITY.CRITICAL,
+        'OSV malicious package advisory',
         name,
-        `Socket.dev security score is ${data.score.toFixed(2)} (threshold: 0.50) — package flagged for suspicious behaviour.`,
-        `https://socket.dev/npm/package/${name}`
+        `Package has ${ids.length} malicious-package advisor${ids.length === 1 ? 'y' : 'ies'} in the OSV.dev database (${ids.join(', ')}).`,
+        `https://osv.dev/vulnerability/${ids[0]}`
       ));
     }
   }
 
-  result.elapsed = Date.now() - (Date.now() - result.elapsed);
+  result.elapsed += Date.now() - netStart;
   return result;
 }
 
@@ -215,4 +232,4 @@ async function runPackageScan(packageJsonPath, options = {}) {
   return findings;
 }
 
-module.exports = { analysePackage, scanPackageJson, scanPackageJsonWithNetwork, fetchSocketScore, runPackageScan };
+module.exports = { analysePackage, scanPackageJson, scanPackageJsonWithNetwork, fetchOsvMalware, runPackageScan };

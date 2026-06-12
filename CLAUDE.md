@@ -16,7 +16,7 @@ targeting developers (Contagious Interview campaign).
 - src/utils/
   - signatures.js         → threat database (patterns, known packages)
   - reporter.js           → chalk output + Finding objects
-- test/test.js            → 12 scenario tests
+- test/test.js            → 25 scenario tests (unit + CLI integration)
 
 ## Stack
 - Node.js ≥ 16, macOS/Linux only
@@ -42,7 +42,7 @@ targeting developers (Contagious Interview campaign).
 
 ## Testing
 Run: node test/test.js
-All 12 tests must pass before any commit.
+All 25 tests must pass before any commit.
 Never commit with failing tests.
 
 ## Finding object shape (IMPORTANT — keep consistent)

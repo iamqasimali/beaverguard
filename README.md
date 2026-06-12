@@ -11,7 +11,7 @@ running malicious npm packages during fake technical interviews.
 
 | Scanner | What it catches |
 |---|---|
-| `scan-packages` | Known DPRK malicious packages, typosquats, malicious install hooks (`preinstall`/`postinstall`), non-registry sources |
+| `scan-packages` | Known DPRK malicious packages, OSV.dev malicious-package advisories, typosquats, malicious install hooks (`preinstall`/`postinstall`), non-registry sources |
 | `scan-files` | Credential harvesting (SSH keys, `.env`, AWS/GitHub tokens), reverse shells, C2 callbacks, obfuscated base64 payloads |
 | `scan-repo` | New/suspicious GitHub accounts, interview-themed repos, committed secrets, root-level droppers |
 | `watch` | Real-time chokidar watcher — alerts immediately when a malicious file is added or changed |
@@ -38,6 +38,9 @@ Scan a `package.json` for malicious dependencies and install scripts.
 
 ```bash
 beaverguard scan-packages ./package.json
+
+# Offline mode — skip the OSV.dev advisory lookup:
+beaverguard scan-packages ./package.json --no-network
 
 # Example output:
 # 🚨 CRITICAL node-telegram-utils
@@ -202,7 +205,7 @@ npm test
 node test/test.js
 ```
 
-All 12 tests must pass.
+All 25 scenario tests must pass.
 
 ---
 

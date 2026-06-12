@@ -184,6 +184,8 @@ function analyseRepo(data, owner, repo) {
     }
 
     for (const file of data.contents) {
+      // Directories (e.g. bin/, scripts/) are not droppers — files only.
+      if (file.type !== 'file') continue;
       const ext = file.name.split('.').pop().toLowerCase();
       const nameLower = file.name.toLowerCase();
       if (['sh', 'py', 'bin'].includes(ext) || nameLower === 'install') {

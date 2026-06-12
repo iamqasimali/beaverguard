@@ -19,7 +19,7 @@
  * const { findings } = await scanGitHubRepo('https://github.com/owner/repo');
  */
 
-const { scanPackageJson, scanPackageJsonWithNetwork, fetchSocketScore, runPackageScan } = require('./scanners/packageScanner');
+const { scanPackageJson, scanPackageJsonWithNetwork, fetchOsvMalware, runPackageScan } = require('./scanners/packageScanner');
 const { scanFiles, runFileScan } = require('./scanners/fileScanner');
 const { scanGitHubRepo, runRepoScan } = require('./scanners/repoScanner');
 const { startWatcher } = require('./scanners/watchScanner');
@@ -30,7 +30,7 @@ module.exports = {
   // Package scanner
   scanPackageJson,
   scanPackageJsonWithNetwork,
-  fetchSocketScore,
+  fetchOsvMalware,
   runPackageScan,
   // File scanner
   scanFiles,
