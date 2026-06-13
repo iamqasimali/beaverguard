@@ -28,15 +28,41 @@ const SUSPICIOUS_DESC_PATTERNS = [
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
- * Parse a GitHub URL into owner + repo.
+ * Parse a GitHub URL into owner + repo. Supports HTTPS and SSH formats.
  * @param {string} url
  * @returns {{ owner: string, repo: string }}
  */
 function parseGitHubUrl(url) {
-  const clean = url.replace(/\.git$/, '').replace(/\/$/, '');
-  const match = clean.match(/github\.com\/([^/]+)\/([^/]+)/);
-  if (!match) throw new Error(`Not a valid GitHub URL: ${url}`);
-  return { owner: match[1], repo: match[2] };
+  let owner, repo;
+
+  // SSH format: git@github.com:owner/repo.git
+  if (url.startsWith('git@github.com:')) {
+    const match = url.replace(/\.git$/, '').match(/git@github\.com:([^/]+)\/(.+)$/);
+    if (match) {
+      owner = match[1];
+      repo = match[2];
+    }
+  } else {
+    // HTTPS format: https://github.com/owner/repo[.git][/]
+    const clean = url.replace(/\.git$/, '').replace(/\/$/, '');
+    const match = clean.match(/https?:\/\/github\.com\/([^/]+)\/(.+)$/);
+    if (match) {
+      owner = match[1];
+      repo = match[2];
+    }
+  }
+
+  if (!owner || !repo) {
+    throw new Error(`Invalid GitHub URL. Expected: https://github.com/owner/repo or git@github.com:owner/repo`);
+  }
+
+  // Strict validation: alphanumeric, hyphens, underscores only
+  const validSlug = /^[a-zA-Z0-9_-]+$/;
+  if (!validSlug.test(owner) || !validSlug.test(repo)) {
+    throw new Error(`Invalid GitHub URL: owner and repo must be alphanumeric (with hyphens/underscores)`);
+  }
+
+  return { owner, repo };
 }
 
 /**

@@ -19,17 +19,19 @@
  * const { findings } = await scanGitHubRepo('https://github.com/owner/repo');
  */
 
-const { scanPackageJson, scanPackageJsonWithNetwork, fetchOsvMalware, runPackageScan } = require('./scanners/packageScanner');
+const { scanPackageJson, scanPackageJsonWithNetwork, scanLockfile, fetchOsvMalware, runPackageScan } = require('./scanners/packageScanner');
 const { scanFiles, runFileScan } = require('./scanners/fileScanner');
 const { scanGitHubRepo, runRepoScan } = require('./scanners/repoScanner');
 const { startWatcher } = require('./scanners/watchScanner');
 const { SEVERITY, createFinding } = require('./utils/reporter');
+const { loadConfig } = require('./utils/config');
 const signatures = require('./utils/signatures');
 
 module.exports = {
   // Package scanner
   scanPackageJson,
   scanPackageJsonWithNetwork,
+  scanLockfile,
   fetchOsvMalware,
   runPackageScan,
   // File scanner
@@ -43,5 +45,6 @@ module.exports = {
   // Utilities
   SEVERITY,
   createFinding,
+  loadConfig,
   signatures,
 };

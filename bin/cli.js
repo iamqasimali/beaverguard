@@ -6,10 +6,11 @@ const chalk = require('chalk');
 const path = require('path');
 const fs = require('fs');
 
-const { runPackageScan, scanPackageJsonWithNetwork } = require('../src/scanners/packageScanner');
+const { runPackageScan, scanPackageJsonWithNetwork, scanLockfile } = require('../src/scanners/packageScanner');
 const { runFileScan, scanFiles } = require('../src/scanners/fileScanner');
 const { runRepoScan, scanGitHubRepo } = require('../src/scanners/repoScanner');
 const { startWatcher } = require('../src/scanners/watchScanner');
+const { printFinding } = require('../src/utils/reporter');
 
 const program = new Command();
 
@@ -34,16 +35,52 @@ program
   .description('Scan a package.json for malicious dependencies and install scripts')
   .option('--json', 'Output results as JSON')
   .option('--no-network', 'Skip OSV.dev remote checks (offline mode)')
+  .option('--lockfile [path]', 'Also scan package-lock.json (auto-detects if no path given)')
   .action(async (pkgPath = './package.json', opts) => {
     try {
       const noNetwork = opts.network === false;
+      const allFindings = [];
+
       if (opts.json) {
         const result = await scanPackageJsonWithNetwork(pkgPath, { noNetwork });
-        console.log(JSON.stringify(result, null, 2));
-        exitOnSevere(result.findings);
+        allFindings.push(...result.findings);
+
+        if (opts.lockfile) {
+          const lockPath = opts.lockfile === true
+            ? path.join(path.dirname(path.resolve(pkgPath)), 'package-lock.json')
+            : opts.lockfile;
+          try {
+            const lockResult = scanLockfile(lockPath);
+            allFindings.push(...lockResult.findings);
+          } catch (lockErr) {
+            console.warn(chalk.yellow(`Warning: ${lockErr.message}`));
+          }
+        }
+
+        console.log(JSON.stringify({ findings: allFindings, total: allFindings.length }, null, 2));
+        exitOnSevere(allFindings);
       } else {
         const findings = await runPackageScan(pkgPath, { noNetwork });
-        exitOnSevere(findings);
+        allFindings.push(...findings);
+
+        if (opts.lockfile) {
+          const lockPath = opts.lockfile === true
+            ? path.join(path.dirname(path.resolve(pkgPath)), 'package-lock.json')
+            : opts.lockfile;
+          try {
+            const lockResult = scanLockfile(lockPath);
+            console.log(chalk.bold.cyan('\n--- Package Lock File Scan ---'));
+            for (const f of lockResult.findings) {
+              printFinding(f);
+            }
+            console.log(chalk.dim(`Checked ${lockResult.packagesChecked} packages in ${lockResult.elapsed}ms`));
+            allFindings.push(...lockResult.findings);
+          } catch (lockErr) {
+            console.warn(chalk.yellow(`Warning: ${lockErr.message}`));
+          }
+        }
+
+        exitOnSevere(allFindings);
       }
     } catch (err) {
       console.error(chalk.red(`Error: ${err.message}`));

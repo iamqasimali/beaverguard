@@ -6,7 +6,10 @@ const { scanFileContent } = require('./fileScanner');
 const { printFinding, printHeader } = require('../utils/reporter');
 const chalk = require('chalk');
 
-const WATCH_EXTENSIONS = new Set(['.js', '.mjs', '.ts', '.py', '.sh', '.env', '.json']);
+const WATCH_EXTENSIONS = new Set([
+  '.js', '.mjs', '.cjs', '.ts', '.mts', '.tsx', '.jsx', '.py',
+  '.sh', '.bash', '.zsh', '.json', '.env', '.yaml', '.yml',
+]);
 const IGNORE_DIRS = [/node_modules/, /\.git/, /dist\//, /build\//, /\.next\//, /__pycache__/];
 const ALERT_COOLDOWN_MS = 10_000;
 

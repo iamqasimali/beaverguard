@@ -11,6 +11,9 @@ const {
   SUSPICIOUS_SCRIPT_PATTERNS,
 } = require('../utils/signatures');
 const { SEVERITY, createFinding, printFinding, printSummary, printHeader } = require('../utils/reporter');
+const { loadConfig } = require('../utils/config');
+
+const config = loadConfig();
 
 const INSTALL_HOOKS = ['preinstall', 'install', 'postinstall', 'prepare', 'prepack'];
 const DEP_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
@@ -29,7 +32,7 @@ async function fetchOsvMalware(packageNames) {
   try {
     const queries = packageNames.map((name) => ({ package: { name, ecosystem: 'npm' } }));
     const { data } = await axios.post(OSV_API, { queries }, {
-      timeout: 8000,
+      timeout: config.osv_timeout_ms,
       headers: { 'User-Agent': 'beaverguard-scanner/1.0' },
     });
     const malicious = {};
@@ -219,6 +222,59 @@ async function scanPackageJsonWithNetwork(packageJsonPath, options = {}) {
 }
 
 /**
+ * Scan a package-lock.json file for resolved packages with threat indicators.
+ * Supports npm lockfile v2/v3 (packages key) and v1 (dependencies key).
+ * @param {string} lockfilePath
+ * @returns {{ findings: object[], packagesChecked: number, elapsed: number }}
+ */
+function scanLockfile(lockfilePath) {
+  const start = Date.now();
+  const absPath = path.resolve(lockfilePath);
+
+  if (!fs.existsSync(absPath)) {
+    throw new Error(`package-lock.json not found: ${absPath}`);
+  }
+
+  let lockfile;
+  try {
+    lockfile = JSON.parse(fs.readFileSync(absPath, 'utf8'));
+  } catch (e) {
+    throw new Error(`Invalid JSON in ${absPath}: ${e.message}`);
+  }
+
+  const findings = [];
+  const checkedPackages = new Set();
+
+  // npm v2/v3 format: packages object
+  if (lockfile.packages) {
+    for (const [pkgKey, pkgData] of Object.entries(lockfile.packages)) {
+      if (pkgKey === '') continue; // skip root entry
+      const name = pkgData.name || pkgKey.split('/').pop();
+      const version = pkgData.version || 'unknown';
+      if (!checkedPackages.has(name)) {
+        const results = analysePackage(name, String(version));
+        findings.push(...results);
+        checkedPackages.add(name);
+      }
+    }
+  }
+
+  // npm v1 format: dependencies object (fallback)
+  if (lockfile.dependencies && !lockfile.packages) {
+    for (const [name, depData] of Object.entries(lockfile.dependencies)) {
+      const version = depData.version || 'unknown';
+      if (!checkedPackages.has(name)) {
+        const results = analysePackage(name, String(version));
+        findings.push(...results);
+        checkedPackages.add(name);
+      }
+    }
+  }
+
+  return { findings, packagesChecked: checkedPackages.size, elapsed: Date.now() - start };
+}
+
+/**
  * Run a full package scan and print results.
  * @param {string} packageJsonPath
  * @param {{ noNetwork?: boolean }} [options]
@@ -232,4 +288,4 @@ async function runPackageScan(packageJsonPath, options = {}) {
   return findings;
 }
 
-module.exports = { analysePackage, scanPackageJson, scanPackageJsonWithNetwork, fetchOsvMalware, runPackageScan };
+module.exports = { analysePackage, scanPackageJson, scanPackageJsonWithNetwork, scanLockfile, fetchOsvMalware, runPackageScan };

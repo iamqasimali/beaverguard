@@ -94,7 +94,7 @@ const SUSPICIOUS_SCRIPT_PATTERNS = [
   { pattern: /id_rsa/i, reason: 'References SSH private key (id_rsa) in install script' },
   { pattern: /authorized_keys/i, reason: 'References authorized_keys in install script' },
   { pattern: /~\/\.aws/i, reason: 'Accesses AWS credentials directory in install script' },
-  { pattern: /\.env\b/i, reason: 'Accesses .env file in install script — credential harvesting risk' },
+  { pattern: /(?<![.\w])\.env(?!\.\w{2,}|rc\b|\.example)/i, reason: 'Accesses .env file in install script — credential harvesting risk' },
 ];
 
 /** Malicious file content patterns (used for detection, not execution) */
@@ -139,6 +139,21 @@ const SENSITIVE_FILE_NAMES = [
 ];
 
 /**
+ * Legitimate external hosts that receive data via axios.post/fetch POST.
+ * URLs to these hosts are not flagged as exfiltration attempts.
+ */
+const SAFE_EXTERNAL_HOSTS = new Set([
+  'api.openai.com',
+  'api.stripe.com',
+  'api.github.com',
+  'www.googleapis.com',
+  'api.sendgrid.com',
+  'hooks.slack.com',
+  'analytics.google.com',
+  'api.anthropic.com',
+]);
+
+/**
  * Official npm scopes of wallet/crypto vendors — packages under these scopes
  * are skipped by the crypto/wallet name patterns above so legit SDKs
  * (e.g. @metamask/sdk, @solana/wallet-adapter-react) are not flagged.
@@ -173,4 +188,5 @@ module.exports = {
   SENSITIVE_FILE_NAMES,
   TRUSTED_PACKAGES,
   TRUSTED_SCOPES,
+  SAFE_EXTERNAL_HOSTS,
 };

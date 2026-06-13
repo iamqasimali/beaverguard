@@ -2,11 +2,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const { MALICIOUS_FILE_PATTERNS, SENSITIVE_FILE_NAMES } = require('../utils/signatures');
+const { MALICIOUS_FILE_PATTERNS, SENSITIVE_FILE_NAMES, SAFE_EXTERNAL_HOSTS } = require('../utils/signatures');
 const { SEVERITY, createFinding, printFinding, printSummary, printHeader } = require('../utils/reporter');
+const { loadConfig } = require('../utils/config');
+
+const config = loadConfig();
 
 const SCANNABLE_EXTENSIONS = new Set([
-  '.js', '.mjs', '.cjs', '.ts', '.mts', '.py',
+  '.js', '.mjs', '.cjs', '.ts', '.mts', '.tsx', '.jsx', '.py',
   '.sh', '.bash', '.zsh', '.json', '.env', '.yaml', '.yml',
 ]);
 
@@ -15,9 +18,8 @@ const IGNORE_DIRS = new Set([
   'coverage', '.turbo', '.cache', '__pycache__',
 ]);
 
-const ENTROPY_EXTENSIONS = new Set(['.js', '.ts', '.py']);
-const ENTROPY_THRESHOLD = 5.6;
-const MAX_FILE_SIZE = 512 * 1024;
+const ENTROPY_EXTENSIONS = new Set(['.js', '.ts', '.py', '.tsx', '.jsx']);
+const MAX_FILE_SIZE = config.max_file_size_kb * 1024;
 
 /**
  * Compute Shannon entropy of a string.
@@ -103,6 +105,20 @@ function scanFileContent(filePath) {
 
   for (const { pattern, reason, severity } of MALICIOUS_FILE_PATTERNS) {
     if (pattern.test(content)) {
+      // Skip axios.post/fetch POST to safe external hosts (OpenAI, Stripe, etc.)
+      if (reason.includes('exfiltration') || reason.includes('POST to external')) {
+        const urlMatch = content.match(/(['"`])(https?:\/\/[^'"`]+)\1/);
+        if (urlMatch) {
+          const url = urlMatch[2];
+          try {
+            const hostname = new URL(url).hostname;
+            if (SAFE_EXTERNAL_HOSTS.has(hostname)) continue;
+          } catch (e) {
+            // Invalid URL — continue with the finding
+          }
+        }
+      }
+
       let detail = '';
       for (let i = 0; i < lines.length; i++) {
         if (pattern.test(lines[i])) {
@@ -118,7 +134,7 @@ function scanFileContent(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   if (ENTROPY_EXTENSIONS.has(ext) && content.length > 500) {
     const entropy = shannonEntropy(content);
-    if (entropy > ENTROPY_THRESHOLD) {
+    if (entropy > config.entropy_threshold) {
       findings.push(createFinding(
         SEVERITY.MEDIUM,
         'High entropy content',
@@ -144,7 +160,14 @@ function scanFiles(targetPath) {
   let filesScanned = 0;
 
   let filePaths;
-  const stat = fs.statSync(absPath);
+  let stat;
+  try {
+    stat = fs.statSync(absPath);
+  } catch (e) {
+    console.warn(`Warning: target path not found: ${targetPath}`);
+    return { findings: [], filesScanned: 0, elapsed: Date.now() - start };
+  }
+
   if (stat.isDirectory()) {
     filePaths = collectFiles(absPath);
   } else {

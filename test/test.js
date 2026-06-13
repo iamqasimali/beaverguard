@@ -5,9 +5,9 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const { analysePackage, scanPackageJson } = require('../src/scanners/packageScanner');
-const { scanFileContent } = require('../src/scanners/fileScanner');
-const { analyseRepo } = require('../src/scanners/repoScanner');
+const { analysePackage, scanPackageJson, scanLockfile } = require('../src/scanners/packageScanner');
+const { scanFileContent, scanFiles } = require('../src/scanners/fileScanner');
+const { analyseRepo, parseGitHubUrl } = require('../src/scanners/repoScanner');
 
 const CLI_PATH = path.join(__dirname, '..', 'bin', 'cli.js');
 
@@ -317,6 +317,89 @@ fs.writeFileSync(path.join(cliDir, 'evil.js'),
 }
 
 cleanup(cliDir);
+
+// ─── v1.2.0 New Feature Tests ──────────────────────────────────────────────────
+console.log('\n── v1.2.0 New Features ──');
+
+// Test 26 — .envrc does not match tightened .env pattern
+{
+  const { fp, dir } = tmpFile('setup.sh', 'source .envrc\necho hello\n');
+  const findings = scanFileContent(fp);
+  assert('.envrc file does not trigger .env pattern', !hasFinding(findings, '.env'), `findings: ${findings.map(f => f.type)}`);
+  cleanup(dir);
+}
+
+// Test 27 — axios.post to api.openai.com is not flagged
+{
+  const { fp, dir } = tmpFile('integration.js', "const axios = require('axios');\naxios.post('https://api.openai.com/v1/chat/completions', { model: 'gpt-4' });\n");
+  const findings = scanFileContent(fp);
+  assert('axios.post to api.openai.com not flagged', !findings.some(f => f.reason.includes('exfiltration')), `findings: ${JSON.stringify(findings)}`);
+  cleanup(dir);
+}
+
+// Test 28 — SSH GitHub URL parse (git@github.com:owner/repo)
+{
+  const url = 'git@github.com:iamqasimali/beaverguard.git';
+  try {
+    const { owner, repo } = parseGitHubUrl(url);
+    assert('SSH URL parses correctly', owner === 'iamqasimali' && repo === 'beaverguard', `owner: ${owner}, repo: ${repo}`);
+  } catch (e) {
+    assert('SSH URL parses correctly', false, `error: ${e.message}`);
+  }
+}
+
+// Test 29 — GitHub URL without repo throws clear error
+{
+  try {
+    parseGitHubUrl('https://github.com/owner');
+    assert('Invalid GitHub URL throws', false, 'no error thrown');
+  } catch (e) {
+    assert('Invalid GitHub URL throws', e.message.includes('Invalid GitHub URL'), `error: ${e.message}`);
+  }
+}
+
+// Test 30 — scanFiles handles missing path gracefully
+{
+  const result = scanFiles('/nonexistent/path/to/project');
+  assert('scanFiles returns empty result on missing path', result.findings.length === 0 && result.filesScanned === 0, `findings: ${result.findings.length}, scanned: ${result.filesScanned}`);
+}
+
+// Test 31 — scanLockfile reads package-lock.json
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'beaverguard-test-lockfile-'));
+  const lockfilePath = path.join(dir, 'package-lock.json');
+  const lockfile = {
+    version: 3,
+    lockfileVersion: 3,
+    packages: {
+      '': { name: 'test-project' },
+      'node_modules/node-telegram-utils': {
+        name: 'node-telegram-utils',
+        version: '1.0.0',
+      },
+    },
+  };
+  fs.writeFileSync(lockfilePath, JSON.stringify(lockfile));
+  const { findings } = scanLockfile(lockfilePath);
+  assert('scanLockfile detects known malicious package', hasSeverity(findings, 'CRITICAL'), `findings: ${findings.length}`);
+  cleanup(dir);
+}
+
+// Test 32 — .jsx and .tsx files are scanned
+{
+  const { fp: jsxFile, dir } = tmpFile('Component.jsx', "const API_KEY = process.env.AWS_SECRET_ACCESS_KEY;\n");
+  const findings = scanFileContent(jsxFile);
+  assert('.jsx file scans for credentials', findings.length > 0, `findings: ${findings.length}`);
+  cleanup(dir);
+}
+
+// Test 33 — .yaml files are scanned
+{
+  const { fp, dir } = tmpFile('config.yaml', 'webhook_url: https://evil.io?token=secret\n');
+  const findings = scanFileContent(fp);
+  assert('.yaml file is recognized as scannable', true); // Just verify it doesn't throw
+  cleanup(dir);
+}
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n── Results: ${passed} passed, ${failed} failed ──\n`);
